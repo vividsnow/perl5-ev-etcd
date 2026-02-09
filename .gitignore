@@ -1,0 +1,23 @@
+# Build artifacts
+*.o
+*.so
+*.bs
+Etcd.c
+blib/
+pm_to_blib
+MYMETA.json
+MYMETA.yml
+Makefile
+Makefile.old
+
+# Editor files
+*~
+*.swp
+.*.swp
+
+# Distribution
+*.tar.gz
+
+# IDE
+.idea/
+.vscode/
