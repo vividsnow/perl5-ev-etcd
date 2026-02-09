@@ -1,0 +1,33 @@
+Revision history for EV-Etcd
+
+0.06  2026-03-17
+    - Add opts to lease_keepalive (auto_reconnect) and member_list (linearizable)
+    - Preserve watch_id across reconnects
+    - Remove GRPC_STATUS_INTERNAL from retryable set
+    - Add Data::Path::XS watch examples
+
+0.05  2026-03-14
+    - Fix edge cases
+
+0.04  2026-03-02
+    - Add missing use EV () before XSLoader::load
+
+0.03  2026-03-02
+    - Fix error sources, election_observe arg order, watch early-cancel
+    - Clear auth token on auth_disable
+    - Deduplicate response handlers, remove dead code
+
+0.02  2026-02-10
+    - Initial release
+    - KV operations: get, put, delete, range, txn (compare-and-swap)
+    - Watch with bidirectional streaming and auto-reconnect
+    - Lease: grant, revoke, keepalive, time-to-live, leases
+    - Lock and unlock tied to leases
+    - Election: campaign, proclaim, leader, resign, observe
+    - Cluster: member list/add/remove/update/promote
+    - Maintenance: status, compact, defragment, alarm, hash_kv, move_leader
+    - Auth: user/role management, authenticate, enable/disable
+    - Health monitoring with configurable interval and callback
+    - Automatic retries for transient gRPC failures
+    - Multiple endpoint support with failover
+    - Structured error callbacks ({code, message, source})
