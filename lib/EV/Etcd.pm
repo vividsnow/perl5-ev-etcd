@@ -104,8 +104,9 @@ RPC timeout in seconds. Default is 30 seconds. Minimum value is 1 second.
 
 =item max_retries
 
-Maximum number of retry attempts for transient failures. Default is 3.
-Set to 0 to disable retries.
+Maximum number of reconnection attempts for streaming operations (watch,
+lease_keepalive, election_observe) after a connection failure. Default is 3.
+Set to 0 to disable automatic reconnection.
 
 =item health_interval
 
@@ -153,9 +154,12 @@ Errors are returned as hash references with the following structure:
         retryable => 1,               # Whether the error is retryable
     }
 
-Retryable status codes include: UNAVAILABLE, RESOURCE_EXHAUSTED, ABORTED,
-INTERNAL, and DEADLINE_EXCEEDED. The client will automatically retry
-operations with these status codes according to the retry configuration.
+The C<retryable> field indicates whether the error is transient (status codes:
+UNAVAILABLE, RESOURCE_EXHAUSTED, ABORTED, INTERNAL, DEADLINE_EXCEEDED).
+Streaming operations (watch, keepalive, observe) automatically reconnect
+on transient failures according to the C<max_retries> configuration.
+Unary RPCs (get, put, delete, etc.) do not retry automatically; use the
+C<retryable> field to implement application-level retry logic.
 
 =head2 put
 
@@ -1486,7 +1490,7 @@ Example:
 =head2 election_observe
 
     $client->election_observe($name, $callback);
-    $client->election_observe($name, $callback, \%opts);
+    $client->election_observe($name, \%opts, $callback);
 
 Observe leader changes for an election. This creates a streaming connection
 that receives notifications whenever the leader changes.
