@@ -10,6 +10,10 @@
 /* Threading support for hybrid gRPC/EV approach */
 #include <pthread.h>
 
+/* Reconnect backoff: 0.5s * attempt (capped at 5s) */
+#define RECONNECT_BACKOFF_SECONDS(attempt) \
+    ((attempt) * 0.5 > 5.0 ? 5.0 : (attempt) * 0.5)
+
 #include <grpc/grpc.h>
 #ifdef HAVE_GRPC_CREDENTIALS_H
 #include <grpc/credentials.h>
@@ -208,6 +212,7 @@ typedef struct watch_call {
     int64_t last_revision;
     watch_params_t params;
     int reconnect_attempt;
+    ev_timer reconnect_timer;  /* Backoff timer for reconnection */
 } watch_call_t;
 
 /* Keepalive structure (for streaming lease keepalive) */
@@ -226,6 +231,7 @@ typedef struct keepalive_call {
     struct keepalive_call *next;
     int auto_reconnect;
     int reconnect_attempt;
+    ev_timer reconnect_timer;  /* Backoff timer for reconnection */
 } keepalive_call_t;
 
 /* Election observe parameters for reconnection */
@@ -249,6 +255,7 @@ typedef struct observe_call {
     struct observe_call *next;
     int auto_reconnect;
     int reconnect_attempt;
+    ev_timer reconnect_timer;  /* Backoff timer for reconnection */
     observe_params_t params;
 } observe_call_t;
 
@@ -285,13 +292,15 @@ typedef struct ev_etcd_struct {
 
     /* Health monitoring */
     ev_timer health_timer;
-    int health_interval;
     int is_healthy;
     SV *health_callback;
+    pid_t owner_pid;  /* PID of process that created this client (fork safety) */
 } ev_etcd_t;
 
 typedef ev_etcd_t *EV__Etcd;
 typedef watch_call_t *EV__Etcd__Watch;
+typedef keepalive_call_t *EV__Etcd__Keepalive;
+typedef observe_call_t *EV__Etcd__Observe;
 
 /* Initialize a call's base structure */
 static inline void init_call_functor(call_base_t *base, call_type_t type) {
@@ -436,6 +445,17 @@ void init_method_slices(void);
  * Usage:
  *   CALL_ERROR_CALLBACK(pc->callback, pc->status, pc->status_details, "range");
  */
+
+/* Safe call_sv wrapper: traps die() in callbacks to prevent longjmp over cleanup */
+#define CALL_SV_SAFE(sv, flags) \
+    do { \
+        call_sv(sv, (flags) | G_EVAL); \
+        if (SvTRUE(ERRSV)) { \
+            warn("EV::Etcd: callback died: %" SVf, SVfARG(ERRSV)); \
+            sv_setsv(ERRSV, &PL_sv_undef); \
+        } \
+    } while (0)
+
 #define CALL_ERROR_CALLBACK(callback, status, status_details, source) \
     do { \
         dSP; \
@@ -444,25 +464,34 @@ void init_method_slices(void);
         PUSHs(sv_2mortal(create_error_hv(aTHX_ status, \
             (const char *)GRPC_SLICE_START_PTR(status_details), \
             GRPC_SLICE_LENGTH(status_details), source))); \
-        PUTBACK; call_sv(callback, G_DISCARD); FREETMPS; LEAVE; \
+        PUTBACK; CALL_SV_SAFE(callback, G_DISCARD); FREETMPS; LEAVE; \
     } while (0)
 
 /*
- * Helper macro for simple string error callback.
+ * Helper macro for error callback with explicit status code and source.
+ *
+ * Usage:
+ *   CALL_STATUS_ERROR_CALLBACK(callback, GRPC_STATUS_UNAVAILABLE, "Watch stream ended", "watch");
+ */
+#define CALL_STATUS_ERROR_CALLBACK(callback, status, message, source) \
+    do { \
+        dSP; \
+        ENTER; SAVETMPS; PUSHMARK(SP); EXTEND(SP, 2); \
+        PUSHs(&PL_sv_undef); \
+        PUSHs(sv_2mortal(create_error_hv(aTHX_ status, \
+            message, strlen(message), source))); \
+        PUTBACK; CALL_SV_SAFE(callback, G_DISCARD); FREETMPS; LEAVE; \
+    } while (0)
+
+/*
+ * Helper macro for simple string error callback (INTERNAL status).
  * Returns a structured error hashref consistent with CALL_ERROR_CALLBACK.
  *
  * Usage:
  *   CALL_SIMPLE_ERROR_CALLBACK(callback, "Error message");
  */
 #define CALL_SIMPLE_ERROR_CALLBACK(callback, message) \
-    do { \
-        dSP; \
-        ENTER; SAVETMPS; PUSHMARK(SP); EXTEND(SP, 2); \
-        PUSHs(&PL_sv_undef); \
-        PUSHs(sv_2mortal(create_error_hv(aTHX_ GRPC_STATUS_INTERNAL, \
-            message, strlen(message), "internal"))); \
-        PUTBACK; call_sv(callback, G_DISCARD); FREETMPS; LEAVE; \
-    } while (0)
+    CALL_STATUS_ERROR_CALLBACK(callback, GRPC_STATUS_INTERNAL, message, "internal")
 
 /*
  * Helper macro for success callback with result hashref.
@@ -476,7 +505,7 @@ void init_method_slices(void);
         ENTER; SAVETMPS; PUSHMARK(SP); EXTEND(SP, 2); \
         PUSHs(sv_2mortal(newRV_noinc((SV *)result_hv))); \
         PUSHs(&PL_sv_undef); \
-        PUTBACK; call_sv(callback, G_DISCARD); FREETMPS; LEAVE; \
+        PUTBACK; CALL_SV_SAFE(callback, G_DISCARD); FREETMPS; LEAVE; \
     } while (0)
 
 /*
@@ -599,9 +628,11 @@ void init_method_slices(void);
             grpc_call_unref((call_ptr)->call); \
             (call_ptr)->call = NULL; \
         } \
-        grpc_metadata_array_destroy(&(call_ptr)->initial_metadata); \
-        grpc_metadata_array_destroy(&(call_ptr)->trailing_metadata); \
-        grpc_slice_unref((call_ptr)->status_details); \
     } while (0)
+
+/* Finish deferred client destruction after in_callback guard.
+ * Called from cq_async_callback and timer callbacks when DESTROY was
+ * invoked during a Perl callback (in_callback=1 prevented immediate free). */
+void finish_client_destroy(pTHX_ ev_etcd_t *client);
 
 #endif /* ETCD_COMMON_H */

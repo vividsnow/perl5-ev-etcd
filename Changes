@@ -1,5 +1,8 @@
 Revision history for EV-Etcd
 
+0.05  2026-03-14
+    - Fix edge cases
+
 0.04  2026-03-02
     - Add missing use EV () before XSLoader::load
 

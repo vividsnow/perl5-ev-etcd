@@ -2,7 +2,7 @@ package EV::Etcd;
 use strict;
 use warnings;
 
-our $VERSION = '0.04';
+our $VERSION = '0.05';
 
 use EV ();
 require XSLoader;
@@ -21,9 +21,9 @@ no warnings 'redefine';
         return $_xs_txn->($self, @_);
     }
 
-    # Extract callback if passed as last bare coderef
+    # Extract trailing bare coderef only if arg count is odd
     my $callback;
-    if (@_ && ref($_[-1]) eq 'CODE') {
+    if (@_ % 2 == 1 && ref($_[-1]) eq 'CODE') {
         $callback = pop;
     }
 
@@ -73,6 +73,7 @@ EV::Etcd - Async etcd v3 client using native gRPC and EV/libev
     # Watch
     $client->watch('/my/key', sub {
         my ($resp, $err) = @_;
+        return warn "Watch error: $err->{message}\n" if $err;
         for my $event (@{$resp->{events}}) {
             say "Event: $event->{type} on $event->{kv}{key}";
         }
@@ -381,9 +382,23 @@ Revoke a lease. All keys attached to the lease will be deleted.
 
 =head2 lease_keepalive
 
-    $client->lease_keepalive($lease_id, $callback);
+    my $keepalive = $client->lease_keepalive($lease_id, $callback);
 
-Keep a lease alive. Call this periodically to prevent the lease from expiring.
+Keep a lease alive. Creates a bidirectional streaming connection that keeps
+the lease refreshed. Returns an C<EV::Etcd::Keepalive> object that can be
+used to cancel the keepalive stream:
+
+    $keepalive->cancel(sub { my ($resp, $err) = @_; });
+
+=head2 EV::Etcd::Keepalive Methods
+
+=head3 cancel
+
+    $keepalive->cancel($callback);
+
+Cancel the keepalive stream. The callback receives C<($response, $error)>
+when cancellation is complete. The response is an empty hash reference on
+success.
 
 =head2 lease_time_to_live
 
@@ -1490,11 +1505,14 @@ Example:
 
 =head2 election_observe
 
-    $client->election_observe($name, $callback);
-    $client->election_observe($name, \%opts, $callback);
+    my $observe = $client->election_observe($name, $callback);
+    my $observe = $client->election_observe($name, \%opts, $callback);
 
 Observe leader changes for an election. This creates a streaming connection
-that receives notifications whenever the leader changes.
+that receives notifications whenever the leader changes. Returns an
+C<EV::Etcd::Observe> object that can be used to cancel the observe stream:
+
+    $observe->cancel(sub { my ($resp, $err) = @_; });
 
 Arguments:
 
@@ -1536,7 +1554,7 @@ Standard response header.
 
 Example:
 
-    $client->election_observe("my-election", sub {
+    my $observe = $client->election_observe("my-election", sub {
         my ($resp, $err) = @_;
         if ($err) {
             warn "Observe error: $err->{message}";
@@ -1544,6 +1562,16 @@ Example:
         }
         say "Leader changed: $resp->{kv}{value}";
     });
+
+=head2 EV::Etcd::Observe Methods
+
+=head3 cancel
+
+    $observe->cancel($callback);
+
+Cancel the observe stream. The callback receives C<($response, $error)>
+when cancellation is complete. The response is an empty hash reference on
+success.
 
 =head1 CLUSTER SERVICE
 
@@ -1680,6 +1708,13 @@ Compare operations:
     { key => $key, target => 'mod', mod_revision => $expected }
     { key => $key, target => 'lease', lease => $expected }
 
+The optional C<result> field controls the comparison operator (default: C<=>):
+
+    result => '='    # EQUAL (default)
+    result => '!='   # NOT_EQUAL
+    result => '<'    # LESS
+    result => '>'    # GREATER
+
 Note: Specify exactly one target field (value/version/create_revision/mod_revision/lease)
 per compare operation. If multiple are provided, the last one processed takes precedence.
 
@@ -1704,6 +1739,14 @@ Example:
             say $resp->{succeeded} ? "Incremented" : "Already changed";
         },
     );
+
+=head1 CAVEATS
+
+B<Fork safety:> EV::Etcd clients must not be used after C<fork()>.
+The background gRPC thread does not survive into the child process.
+Inherited client objects will be safely cleaned up on destruction
+(with a warning), but cannot perform any operations.
+Create a new client in the child process if needed.
 
 =head1 AUTHOR
 
