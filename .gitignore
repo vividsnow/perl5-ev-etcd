@@ -21,3 +21,6 @@ Makefile.old
 # IDE
 .idea/
 .vscode/
+
+# Local (not for distribution)
+/CLAUDE.md
