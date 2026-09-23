@@ -1,4 +1,3 @@
-# Build artifacts
 *.o
 *.so
 *.bs
@@ -9,18 +8,11 @@ MYMETA.json
 MYMETA.yml
 Makefile
 Makefile.old
-
-# Editor files
 *~
 *.swp
 .*.swp
-
-# Distribution
 *.tar.gz
-
-# IDE
 .idea/
 .vscode/
-
-# Local (not for distribution)
 /CLAUDE.md
+/.pcg/
